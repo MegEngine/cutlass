@@ -21,6 +21,7 @@ class _DepthWiseConv2dImplicitGEMMFP32(torch.autograd.Function):
     @staticmethod
     @torch.cuda.amp.custom_bwd
     def backward(ctx, grad):
+        grad = grad.contiguous()
         x, w = ctx.saved_tensors
         dx = _extension.backward_data_fp32(grad, w)
         dw = _extension.backward_filter_fp32(grad, x, w)
@@ -37,6 +38,7 @@ class _DepthWiseConv2dImplicitGEMMFP16(torch.autograd.Function):
     @staticmethod
     @torch.cuda.amp.custom_bwd
     def backward(ctx, grad):
+        grad = grad.contiguous()
         x, w = ctx.saved_tensors
         dx = _extension.backward_data_fp16(grad, w)
         dw = _extension.backward_filter_fp16(grad, x, w)
