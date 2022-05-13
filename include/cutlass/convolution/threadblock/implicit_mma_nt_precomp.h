@@ -160,6 +160,8 @@ protected:
     /// shared memory
     SmemIteratorFilter smem_iterator_filter_;
 
+    typename Base::SharedStorage& sharedStorage_;
+
 public:
     /// Construct from tensor references
     CUTLASS_DEVICE
@@ -172,6 +174,7 @@ public:
             int lane_idx             ///< ID of each thread within a warp
             )
             : Base(shared_storage, thread_idx, warp_idx, lane_idx),
+              sharedStorage_(shared_storage),
               smem_iterator_src_(shared_storage.operand_src_ref(), thread_idx),
               smem_iterator_filter_(shared_storage.operand_filter_ref(),
                                     thread_idx) {

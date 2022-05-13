@@ -491,6 +491,349 @@ public:
     }
 };
 
+/// Tile iterator used to load output tile from shared memory in epilogue.
+///
+/// Satisfies: ReadableTileIterator | PredicatedTileIterator |
+/// ForwardTileIterator
+///
+template <typename ThreadblockShape_,
+          typename ThreadMap_,  ///< Thread map (conept: OutputTileThreadMap)
+          typename Layout_,     ///< Tensor Layout
+          typename Element_     ///< Element data type
+          >
+class Dwconv2dWgradPredicatedTileIterator;
+
+////////////////////////////////////////////////////////////////////////////////
+
+template <typename ThreadblockShape_, typename ThreadMap_, typename Element_>
+class Dwconv2dWgradPredicatedTileIterator<ThreadblockShape_, ThreadMap_,
+                                          layout::TensorNCHW, Element_> {
+public:
+    using ThreadMap = ThreadMap_;
+    using Shape = typename ThreadMap::Shape;
+    using ThreadblockShape = ThreadblockShape_;
+
+    using Element = Element_;
+
+    using Layout = layout::TensorNCHW;
+    using TensorRef = TensorRef<Element, Layout>;
+    using ConstTensorRef = typename TensorRef::ConstTensorRef;
+
+    using Index = typename Layout::Index;
+    using LongIndex = typename Layout::LongIndex;
+    using TensorCoord = typename Layout::TensorCoord;
+
+    /// Logical layout
+    using LogicalLayout = layout::RowMajor;
+
+    /// Logical tensor coord
+    using LogicalCoord = typename LogicalLayout::TensorCoord;
+
+    using ConvProblemSize = typename conv::Conv2dProblemSize;
+
+    static int const kElementsPerAccess = ThreadMap::kElementsPerAccess;
+    static int const kThreads = ThreadMap::kThreads;
+    static int const kIterations = ThreadMap::Count::kTile;
+
+    static_assert(ThreadMap::Iterations::kRow > 0,
+                  "ThreadMap::Iterations::kRow must be > 0");
+    static_assert(ThreadMap::Iterations::kGroup > 0,
+                  "ThreadMap::Iterations::kGroup must be > 0");
+    static_assert(ThreadMap::Iterations::kCluster > 0,
+                  "ThreadMap::Iterations::kCluster must be > 0");
+    static_assert(ThreadMap::Iterations::kColumn > 0,
+                  "ThreadMap::Iterations::kColumn must be > 0");
+
+    /// Fragment object
+    using Fragment = Array<Element, ThreadMap::Iterations::kColumn *
+                                            ThreadMap::Iterations::kRow *
+                                            ThreadMap::Iterations::kGroup *
+                                            ThreadMap::Iterations::kCluster *
+                                            ThreadMap::kElementsPerAccess>;
+
+    /// Memory access size
+    using AccessType = AlignedArray<Element, ThreadMap::kElementsPerAccess>;
+
+    //
+    // Parameters struct
+    //
+
+    struct Params {
+        //
+        // Data members
+        //
+
+        /// Used for converting tensor coordinates into pointer offset
+        Layout layout_;
+
+        /// Tilemap
+        using TileMap = conv::threadblock::TileMap<
+                Layout, conv::threadblock::TileMapType::kRow2OHW_Col2IHW>;
+
+        TileMap tile_map_;
+
+        Index fh_;
+        Index fw_;
+
+        //
+        // Methods
+        //
+
+        // Jie: refer to PredicatedTileIterator
+        static const LongIndex increment_row_no_mul_stride =
+                ThreadMap::Delta::kRow;
+        static const LongIndex increment_group_no_mul_stride =
+                ThreadMap::Delta::kGroup -
+                ThreadMap::Delta::kRow * (ThreadMap::Iterations::kRow - 1);
+        static const LongIndex increment_cluster_no_mul_stride =
+                ThreadMap::Delta::kCluster -
+                ThreadMap::Delta::kGroup * (ThreadMap::Iterations::kGroup - 1) -
+                ThreadMap::Delta::kRow * (ThreadMap::Iterations::kRow - 1);
+        static const LongIndex advance_row_no_mul_stride =
+                ThreadMap::Shape::kRow;
+        static const LongIndex advance_group_no_mul_stride =
+                (ThreadMap::Shape::kGroup - 1) * ThreadMap::Shape::kRow *
+                ThreadMap::Count::kRow;
+        static const LongIndex advance_cluster_no_mul_stride =
+                ThreadMap::Count::kGroup * ThreadMap::Shape::kGroup *
+                ThreadMap::Count::kRow * ThreadMap::Shape::kRow;
+        static const LongIndex advance_tile_no_mul_stride =
+                ThreadMap::Shape::kGroup * ThreadMap::Shape::kRow *
+                ThreadMap::Shape::kCluster * ThreadMap::Shape::kTile;
+
+        CUTLASS_HOST_DEVICE
+        Params() : layout_(Layout()) {}
+
+        CUTLASS_HOST_DEVICE
+        Params(Layout const& layout, ConvProblemSize const& problem_size)
+                : layout_(layout),
+                  tile_map_(problem_size.W, problem_size.Q,
+                            problem_size.stride_h, problem_size.stride_w,
+                            problem_size.pad_h, problem_size.pad_w),
+                  fh_(problem_size.R),
+                  fw_(problem_size.S) {}
+    };
+
+    /// Mask object
+    struct Mask {
+        static int const kCount = ThreadMap::Iterations::kColumn;
+
+        /// Predicate state
+        bool predicates[kCount];
+
+        //
+        // Mask
+        //
+        CUTLASS_HOST_DEVICE
+        Mask() { enable(); }
+
+        ///< Efficiently disables all accesses guarded by mask
+        CUTLASS_HOST_DEVICE void clear() {
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i < kCount; ++i) {
+                predicates[i] = false;
+            }
+        }
+
+        ///< CUTLASS_HOST_DEVICE enables all accesses guarded by mask
+        CUTLASS_DEVICE void enable() {
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i < kCount; ++i) {
+                predicates[i] = true;
+            }
+        }
+    };
+
+private:
+    //
+    // Data members
+    //
+
+    // Jie: I do not use the mask structure.
+    // Mask mask_;
+
+    /// Parameters structure containing reference and precomputed state.
+    Params const& params_;
+
+    /// Byte-level pointer
+    uint8_t* byte_pointer_;
+
+    /// Internal state counter
+    int state_[3];
+
+    LogicalCoord thread_origin_;
+
+    LogicalCoord extent_;
+
+public:
+    //
+    // Methods
+    //
+
+    /// Constructor
+    CUTLASS_DEVICE
+    Dwconv2dWgradPredicatedTileIterator(
+            Params const& params, Element* pointer, LogicalCoord extent,
+            int thread_idx, int warp_idx, int lane_idx,
+            LogicalCoord threadblock_offset = LogicalCoord())
+            : params_(params) {
+        // Jie: although we do not use the variables 'warp_idx' and 'lane_idx',
+        //  I have to keep them because the code should be compatible with the
+        //  old ones. But do not worry, the compiler will remove the unused
+        //  variables automatically.
+        MatrixCoord thread_offset =
+                ThreadMap::initial_offset(thread_idx) + threadblock_offset;
+
+        // Initialize internal state counter
+        state_[0] = state_[1] = state_[2] = 0;
+
+        thread_origin_ = thread_offset;
+
+        extent_ = extent - thread_origin_;
+
+        byte_pointer_ = reinterpret_cast<uint8_t*>(pointer);
+    }
+
+    /// Adds a pointer offset in units of Element
+    CUTLASS_HOST_DEVICE
+    void add_pointer_offset(LongIndex pointer_offset) {
+        byte_pointer_ += pointer_offset * sizeof_bits<Element>::value / 8;
+    }
+
+    /// Stores a fragment to memory
+    CUTLASS_DEVICE
+    void store_with_byte_offset(Fragment const& frag, int64_t byte_offset) {
+        auto frag_ptr = reinterpret_cast<AccessType const*>(&frag);
+        LogicalCoord coord{0, 0};
+
+        CUTLASS_PRAGMA_UNROLL
+        for (int cluster = 0; cluster < ThreadMap::Iterations::kCluster;
+             ++cluster) {
+            CUTLASS_PRAGMA_UNROLL
+            for (int group = 0; group < ThreadMap::Iterations::kGroup;
+                 ++group) {
+                CUTLASS_PRAGMA_UNROLL
+                for (int row = 0; row < ThreadMap::Iterations::kRow; ++row) {
+                    int frag_row_idx =
+                            (row +
+                             ThreadMap::Iterations::kRow *
+                                     (group +
+                                      ThreadMap::Iterations::kGroup * cluster));
+
+                    CUTLASS_PRAGMA_UNROLL
+                    for (int column = 0;
+                         column < ThreadMap::Iterations::kColumn; ++column) {
+                        CUTLASS_PRAGMA_UNROLL
+                        for (int i = 0; i < AccessType::kElements; ++i) {
+                            LogicalCoord inner_coord =
+                                    coord +
+                                    LogicalCoord{
+                                            0,
+                                            column * ThreadMap::Delta::kColumn +
+                                                    i};
+                            TensorCoord tensor_coord;
+                            bool guard = valid(tensor_coord, inner_coord);
+                            if (!guard)
+                                continue;
+
+                            AccessType* memory_pointer = get(tensor_coord);
+                            auto* local_memory_pointer =
+                                    reinterpret_cast<Element*>(memory_pointer);
+
+                            ::atomicAdd(&local_memory_pointer[i],
+                                        frag_ptr[frag_row_idx *
+                                                         ThreadMap::Iterations::
+                                                                 kColumn +
+                                                 column][i]);
+                        }
+                    }
+
+                    if (row + 1 < ThreadMap::Iterations::kRow) {
+                        coord.row() += params_.increment_row_no_mul_stride;
+                    }
+                }
+
+                if (group + 1 < ThreadMap::Iterations::kGroup) {
+                    coord.row() += params_.increment_group_no_mul_stride;
+                }
+            }
+
+            if (cluster + 1 < ThreadMap::Iterations::kCluster) {
+                coord.row() += params_.increment_cluster_no_mul_stride;
+            }
+        }
+    }
+
+    /// Stores a fragment to memory
+    CUTLASS_DEVICE
+    void store(Fragment const& frag) { store_with_byte_offset(frag, 0); }
+
+    /// Advances to the next position to load or store
+    CUTLASS_HOST_DEVICE
+    Dwconv2dWgradPredicatedTileIterator& operator++() {
+        ++state_[0];
+        thread_origin_.row() += params_.advance_row_no_mul_stride;
+
+        if (state_[0] == ThreadMap::Count::kRow) {
+            state_[0] = 0;
+            ++state_[1];
+            thread_origin_.row() += params_.advance_group_no_mul_stride;
+
+            if (state_[1] == ThreadMap::Count::kGroup) {
+                state_[1] = 0;
+                ++state_[2];
+                thread_origin_.row() += params_.advance_cluster_no_mul_stride;
+
+                if (state_[2] == ThreadMap::Count::kCluster) {
+                    state_[2] = 0;
+                    thread_origin_.row() += params_.advance_tile_no_mul_stride;
+                }
+            }
+        }
+
+        return *this;
+    }
+
+    CUTLASS_DEVICE
+    Dwconv2dWgradPredicatedTileIterator& add_coord_offset(
+            TensorCoord const& coord_offset) {
+        add_pointer_offset(params_.layout_(coord_offset));
+        return *this;
+    }
+
+    /// Returns whether access is valid or not
+    CUTLASS_HOST_DEVICE
+    bool valid(TensorCoord& tensor_coord,
+               LogicalCoord const& coord = LogicalCoord()) {
+        // Jie: Borrowed from Xiao's code.
+        bool guard = coord.row() < extent_.row() &&
+                     coord.column() < extent_.column();
+        auto coord_ = thread_origin_ + coord;
+        auto filter = params_.tile_map_(coord_);
+        tensor_coord = TensorCoord(0, filter.row(), filter.column(), 0);
+        return guard && filter.row() >= 0 && filter.row() < params_.fh_ &&
+               filter.column() >= 0 && filter.column() < params_.fw_;
+    }
+
+    CUTLASS_DEVICE
+    bool early_stop(LogicalCoord const& threadblock_offset) {
+        auto filter_ranges = params_.tile_map_(
+                make_Coord(threadblock_offset.row(),
+                           threadblock_offset.row() + ThreadblockShape::kM),
+                make_Coord(threadblock_offset.column(),
+                           threadblock_offset.column() + ThreadblockShape::kN));
+        return filter_ranges.at(0) >= params_.fh_ || filter_ranges.at(1) < 0;
+    }
+
+    /// Returns a pointer
+    CUTLASS_HOST_DEVICE
+    AccessType* get(TensorCoord const& coord = TensorCoord()) const {
+        return reinterpret_cast<AccessType*>(
+                byte_pointer_ +
+                params_.layout_(coord) * sizeof_bits<Element>::value / 8);
+    }
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Tile iterator used to access global memory for dwconv2d wgrad operator.

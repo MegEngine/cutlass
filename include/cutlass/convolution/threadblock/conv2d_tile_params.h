@@ -218,11 +218,11 @@ struct TileMap<layout::TensorNCHW, TileMapType::kRow2IHW_Col2OHW> {
     CUTLASS_HOST_DEVICE
     MatrixCoord operator()(Index const& dividend,
                            MatrixCoord const& src) const {
-        int h = 0, w = 0;
-        fast_divmod(h, w, dividend, wo_, wo_mul_, wo_shr_);
-        h = src.row() - h * sh_ + ph_;
-        w = src.column() - w * sw_ + pw_;
-        return MatrixCoord{h, w};
+        int p = 0, q = 0;
+        fast_divmod(p, q, dividend, wo_, wo_mul_, wo_shr_);
+        int r = src.row() - p * sh_ + ph_;
+        int s = src.column() - q * sw_ + pw_;
+        return MatrixCoord{r, s};
     }
     CUTLASS_HOST_DEVICE
     Coord<2> operator()(Coord<2> const& ranges, int const& offset) const {

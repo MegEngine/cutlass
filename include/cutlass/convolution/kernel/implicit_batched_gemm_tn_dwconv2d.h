@@ -289,6 +289,7 @@ struct ImplicitBatchedGemmTnDepthwiseConvolution {
         ThreadblockSwizzle threadblock_swizzle;
 
         cutlass::gemm::GemmCoord threadblock_tile_offset =
+                /* N, P*Q, K */
                 threadblock_swizzle.template get_tile_offset<Mma::Shape>();
 
         // Compute initial location in logical coordinates
@@ -303,8 +304,10 @@ struct ImplicitBatchedGemmTnDepthwiseConvolution {
         typename Mma::IteratorFilter iterator_filter(params.params_filter,
                                                      params.ref_filter.data());
 
-        cutlass::MatrixCoord extent_filter{params.gemm_problem_size.k(),
-                                           params.gemm_problem_size.n()};
+        // expand target size
+        cutlass::MatrixCoord extent_filter{
+                params.gemm_problem_size.k() /* H * W */,
+                params.gemm_problem_size.n() /* P * Q */};
 
         // Update extent and threadblock_offset
         iterator_filter.initialize(thread_idx, extent_filter, tb_offset_filter);
@@ -315,12 +318,13 @@ struct ImplicitBatchedGemmTnDepthwiseConvolution {
         // Construct iterator to Src Tensor operand
         typename Mma::IteratorSrc iterator_src(
                 params.params_src, params.ref_src.data(),
-                {params.gemm_problem_size.m(), extent_filter.row()}, thread_idx,
-                tb_offset_src);
+                {params.gemm_problem_size.m() /* N */, extent_filter.row()},
+                thread_idx, tb_offset_src);
 
-        iterator_src.add_coord_offset({0, 0, 0, threadblock_tile_offset.k()});
+        iterator_src.add_coord_offset(
+                {0, 0, 0, threadblock_tile_offset.k() /* K */});
         iterator_filter.add_coord_offset(
-                {threadblock_tile_offset.k(), 0, 0, 0});
+                {threadblock_tile_offset.k() /* K */, 0, 0, 0});
 
         // Broadcast the warp_id computed by lane 0 to ensure dependent code
         // is compiled as warp-uniform.

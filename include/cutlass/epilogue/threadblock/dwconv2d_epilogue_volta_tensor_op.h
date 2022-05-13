@@ -152,6 +152,74 @@ struct Dwconv2dEpilogueVoltaTensorOp<Shape_, layout::TensorNCHW,
             BiasTileIterator, OutputOp, Padding>;
 };
 
+template <typename Shape_,            ///< Threadblock-level tile size (concept:
+                                      ///< GemmShape)
+          typename LayoutDst_,        ///< Layout type for output tensor
+          typename LayoutBias_,       ///< Layout type for bias tensor
+          typename WarpMmaTensorOp_,  ///< Warp-level mma operator
+          typename OutputOp_,         ///< Thread-level epilogue operator
+          int ElementsPerAccess       ///< Elements per access
+          >
+struct Dwconv2dWgradEpilogueVoltaTensorOp;
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+template <typename Shape_, typename WarpMmaTensorOp_, typename OutputOp_,
+          int ElementsPerAccess>
+struct Dwconv2dWgradEpilogueVoltaTensorOp<Shape_, layout::TensorNCHW,
+                                          layout::TensorNCHW, WarpMmaTensorOp_,
+                                          OutputOp_, ElementsPerAccess> {
+    using Shape = Shape_;
+    using WarpMmaTensorOp = WarpMmaTensorOp_;
+    using OutputOp = OutputOp_;
+    static int const kElementsPerAccess = ElementsPerAccess;
+    static const int kPartitionsK = Shape::kK / WarpMmaTensorOp::Shape::kK;
+
+    using ElementOutput = typename OutputOp::ElementOutput;
+    using LayoutDst = layout::TensorNCHW;
+    using ElementAccumulator = typename WarpMmaTensorOp::ElementC;
+
+    //
+    // Thread map
+    //
+
+    using OutputTileThreadMap = typename cutlass::epilogue::threadblock::
+            DefaultThreadMapVoltaTensorOp<
+                    Shape, typename WarpMmaTensorOp::Shape, kPartitionsK,
+                    ElementOutput, kElementsPerAccess,
+                    ElementAccumulator>::Type;
+
+    using OutputTileIterator =
+            cutlass::epilogue::threadblock::Dwconv2dWgradPredicatedTileIterator<
+                    Shape, OutputTileThreadMap, LayoutDst, ElementOutput>;
+
+    using AccumulatorFragmentIterator =
+            cutlass::epilogue::warp::FragmentIteratorVoltaTensorOp<
+                    typename WarpMmaTensorOp::Shape, gemm::GemmShape<32, 32, 4>,
+                    ElementAccumulator, typename WarpMmaTensorOp::LayoutC>;
+
+    using WarpTileIterator = cutlass::epilogue::warp::TileIteratorVoltaTensorOp<
+            typename WarpMmaTensorOp::Shape, gemm::GemmShape<32, 32, 4>,
+            ElementAccumulator, typename WarpMmaTensorOp::LayoutC>;
+
+    using SharedLoadIterator =
+            cutlass::epilogue::threadblock::SharedLoadIterator<
+                    typename OutputTileThreadMap::CompactedThreadMap,
+                    ElementAccumulator>;
+
+    /// Hard-coded padding elements added
+    using Padding = typename WarpTileIterator::Padding;
+
+    //
+    // Define the epilogue
+    //
+    using Epilogue =
+            cutlass::epilogue::threadblock::ConvolutionEpilogueNoSrcNoBias<
+                    Shape, LayoutDst, kPartitionsK, WarpMmaTensorOp,
+                    OutputTileIterator, AccumulatorFragmentIterator,
+                    WarpTileIterator, SharedLoadIterator, OutputOp, Padding>;
+};
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 }  // namespace threadblock
