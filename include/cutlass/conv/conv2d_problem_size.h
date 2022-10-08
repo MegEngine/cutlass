@@ -460,6 +460,22 @@ cutlass::Tensor4DCoord implicit_gemm_tensor_b_extent(
     return cutlass::Tensor4DCoord();
 }
 
+/// Returns RegionRestrictedConvolution tensor MaskInput extent as Tensor4DCoord
+CUTLASS_HOST_DEVICE
+cutlass::Tensor4DCoord implicit_gemm_tensor_rin_extent(
+        Operator conv_operator, Conv2dProblemSize const& problem_size) {
+    return cutlass::Tensor4DCoord(
+            {problem_size.N, problem_size.H, problem_size.W, 1});
+}
+
+/// Returns RegionRestrictedConvolution tensor MaskOutput extent as Tensor4DCoord
+CUTLASS_HOST_DEVICE
+cutlass::Tensor4DCoord implicit_gemm_tensor_rout_extent(
+        Operator conv_operator, Conv2dProblemSize const& problem_size) {
+    return cutlass::Tensor4DCoord(
+            {problem_size.N, problem_size.P, problem_size.Q, 1});
+}
+
 /// Returns ImplicitGemm tensor C extent as Tensor4DCoord
 CUTLASS_HOST_DEVICE
 cutlass::Tensor4DCoord implicit_gemm_tensor_c_extent(

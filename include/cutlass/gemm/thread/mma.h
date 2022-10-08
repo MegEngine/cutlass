@@ -67,6 +67,37 @@ template <
         typename Enable = bool>
 struct Mma;
 
+
+/// Structure to compute the matrix product
+template <
+        /// Size of the Gemm problem - concept: gemm::GemmShape<>
+        typename Shape,
+        /// Data type of A elements
+        typename ElementA,
+        /// Layout of A matrix (concept: MatrixLayout)
+        typename LayoutA,
+        /// Data type of B elements
+        typename ElementB,
+        /// Layout of B matrix (concept: MatrixLayout)
+        typename LayoutB,
+        /// Data type of A elements
+        typename ElementMaskInput,
+        /// Layout of A matrix (concept: MatrixLayout)
+        typename LayoutMaskInput,
+        /// Data type of B elements
+        typename ElementMaskOutput,
+        /// Layout of B matrix (concept: MatrixLayout)
+        typename LayoutMaskOutput,
+        /// Element type of C matrix
+        typename ElementC,
+        /// Layout of C matrix (concept: MatrixLayout)
+        typename LayoutC,
+        /// Concept: arch::OpMultiplyAdd or arch::Mma<>
+        typename Operator = arch::OpMultiplyAdd,
+        /// Used for partial specialization
+        typename Enable = bool>
+struct RegionRestrictedMma;
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 }  // namespace thread

@@ -229,6 +229,260 @@ struct Mma<Shape_, ElementA_, LayoutA_, ElementB_, LayoutB_, ElementC_,
     }
 };
 
+/// Gemplate that handles all packed matrix layouts
+template <
+        /// Size of the Gemm problem - concept: gemm::GemmShape<>
+        typename Shape_,
+        /// Data type of A elements
+        typename ElementA_,
+        /// Layout of A matrix (concept: layout::MapFunc)
+        typename LayoutA_,
+        /// Data type of B elements
+        typename ElementB_,
+        /// Layout of B matrix (concept: layout::MapFunc)
+        typename LayoutB_,
+        /// Data type of A elements
+        typename ElementMaskFirst_,
+        /// Layout of A matrix (concept: layout::MapFunc)
+        typename LayoutMaskFirst_,
+        /// Data type of B elements
+        typename ElementMaskSecond_,
+        /// Layout of B matrix (concept: layout::MapFunc)
+        typename LayoutMaskSecond_,
+        /// Element type of C matrix
+        typename ElementC_,
+        /// Layout of C matrix (concept: layout::MapFunc)
+        typename LayoutC_,
+        /// Operator used to compute GEMM
+        typename Operator_>
+struct RegionRestrictedMmaGeneric {
+    /// Size of the Gemm problem - concept: gemm::GemmShape<>
+    using Shape = Shape_;
+
+    /// Data type of operand A
+    using ElementA = ElementA_;
+
+    /// Layout of A matrix (concept: layout::MapFunc)
+    using LayoutA = LayoutA_;
+
+    /// Data type of operand B
+    using ElementB = ElementB_;
+
+    /// Layout of B matrix (concept: layout::MapFunc)
+    using LayoutB = LayoutB_;
+
+    /// Data type of operand A
+    using ElementMaskFirst = ElementMaskFirst_;
+
+    /// Layout of A matrix (concept: layout::MapFunc)
+    using LayoutMaskFirst = LayoutMaskFirst_;
+
+    /// Data type of operand B
+    using ElementMaskSecond = ElementMaskSecond_;
+
+    /// Layout of B matrix (concept: layout::MapFunc)
+    using LayoutMaskSecond = LayoutMaskSecond_;
+
+    /// Element type of operand C
+    using ElementC = ElementC_;
+
+    /// Layout of C matrix (concept: layout::MapFunc)
+    using LayoutC = LayoutC_;
+
+    /// Underlying mathematical operator
+    using Operator = Operator_;
+
+    /// A operand storage
+    using FragmentA = Array<ElementA, Shape::kMK>;
+
+    /// B operand storage
+    using FragmentB = Array<ElementB, Shape::kKN>;
+
+    /// A operand storage
+    using FragmentMaskFirst = Array<ElementMaskFirst, Shape::kMK>;
+
+    /// B operand storage
+    using FragmentMaskSecond = Array<ElementMaskSecond, Shape::kKN>;
+
+    /// C operand storage
+    using FragmentC = Array<ElementC, Shape::kMN>;
+
+    /// Instruction
+    using MmaOp = arch::RegionRestrictedMma<
+            gemm::GemmShape<1, 1, 1>, 1, ElementA, LayoutA, ElementB, LayoutB,
+            ElementMaskFirst, LayoutMaskFirst, ElementMaskSecond,
+            LayoutMaskSecond, ElementC, LayoutC, Operator>;
+
+    //
+    // Methods
+    //
+
+    /// Computes a matrix product D = A * B + C
+    CUTLASS_HOST_DEVICE
+    void operator()(FragmentC& D, FragmentA const& A, FragmentB const& B,
+                    FragmentMaskFirst const& maskFirst,
+                    FragmentMaskSecond const& maskSecond, FragmentC const& C) {
+        TensorRef<ElementA const, LayoutA> a_ref(
+                reinterpret_cast<ElementA const*>(&A),
+                LayoutA::packed({Shape::kM, Shape::kK}));
+
+        TensorRef<ElementB const, LayoutB> b_ref(
+                reinterpret_cast<ElementB const*>(&B),
+                LayoutB::packed({Shape::kK, Shape::kN}));
+
+        TensorRef<ElementMaskFirst const, LayoutMaskFirst> maskFirst_ref(
+                reinterpret_cast<ElementMaskFirst const*>(&maskFirst),
+                LayoutA::packed({Shape::kM, Shape::kK}));
+
+        TensorRef<ElementMaskSecond const, LayoutMaskSecond> maskSecond_ref(
+                reinterpret_cast<ElementMaskSecond const*>(&maskSecond),
+                LayoutB::packed({Shape::kK, Shape::kN}));
+
+        TensorRef<ElementC, LayoutC> d_ref(
+                reinterpret_cast<ElementC*>(&D),
+                LayoutC::packed(make_Coord(Shape::kM, Shape::kN)));
+
+        MmaOp mma_op;
+
+        // Copy accumulators
+        D = C;
+
+        // Compute matrix product
+        CUTLASS_PRAGMA_UNROLL
+        for (int k = 0; k < Shape::kK; ++k) {
+            CUTLASS_PRAGMA_UNROLL
+            for (int n = 0; n < Shape::kN; ++n) {
+                CUTLASS_PRAGMA_UNROLL
+                for (int m = 0; m < Shape::kM; ++m) {
+                    int m_serpentine = (n % 2) ? (Shape::kM - 1 - m) : m;
+
+                    MatrixCoord mn(m_serpentine, n);
+                    MatrixCoord mk(m_serpentine, k);
+                    MatrixCoord kn(k, n);
+
+                    Array<ElementC, 1> d;
+                    Array<ElementA, 1> a;
+                    Array<ElementB, 1> b;
+                    Array<ElementMaskFirst, 1> maskFirst;
+                    Array<ElementMaskSecond, 1> maskSecond;
+
+                    d[0] = d_ref.at(mn);
+                    a[0] = a_ref.at(mk);
+                    b[0] = b_ref.at(kn);
+                    maskFirst[0] = maskFirst_ref.at(mk);
+                    maskSecond[0] = maskSecond_ref.at(kn);
+
+                    mma_op(d, a, b, maskFirst, maskSecond, d);
+
+                    d_ref.at(mn) = d[0];
+                }
+            }
+        }
+    }
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Gemplate that handles conventional layouts for FFMA and DFMA GEMM
+template <
+        /// Size of the Gemm problem - concept: gemm::GemmShape<>
+        typename Shape_,
+        /// Data type of A elements
+        typename ElementA_,
+        /// Layout of A matrix (concept: layout::MapFunc)
+        typename LayoutA_,
+        /// Data type of B elements
+        typename ElementB_,
+        /// Layout of B matrix (concept: layout::MapFunc)
+        typename LayoutB_,
+        /// Data type of A elements
+        typename ElementMaskFirst_,
+        /// Layout of A matrix (concept: layout::MapFunc)
+        typename LayoutMaskFirst_,
+        /// Data type of B elements
+        typename ElementMaskSecond_,
+        /// Layout of B matrix (concept: layout::MapFunc)
+        typename LayoutMaskSecond_,
+        /// Element type of C matrix
+        typename ElementC_,
+        /// Layout of C matrix (concept: layout::MapFunc)
+        typename LayoutC_>
+struct RegionRestrictedMma<Shape_, ElementA_, LayoutA_, ElementB_, LayoutB_,
+                           ElementMaskFirst_, LayoutMaskFirst_,
+                           ElementMaskSecond_, LayoutMaskSecond_, ElementC_,
+                           LayoutC_, arch::OpMultiplyAdd, bool> {
+    /// Size of the Gemm problem - concept: gemm::GemmShape<>
+    using Shape = Shape_;
+
+    /// Data type of operand A
+    using ElementA = ElementA_;
+
+    /// Layout of A matrix (concept: layout::MapFunc)
+    using LayoutA = LayoutA_;
+
+    /// Data type of operand B
+    using ElementB = ElementB_;
+
+    /// Layout of B matrix (concept: layout::MapFunc)
+    using LayoutB = LayoutB_;
+
+    /// Data type of operand A
+    using ElementMaskFirst = ElementMaskFirst_;
+
+    /// Layout of A matrix (concept: layout::MapFunc)
+    using LayoutMaskFirst = LayoutMaskFirst_;
+
+    /// Data type of operand B
+    using ElementMaskSecond = ElementMaskSecond_;
+
+    /// Layout of B matrix (concept: layout::MapFunc)
+    using LayoutMaskSecond = LayoutMaskSecond_;
+
+    /// Element type of operand C
+    using ElementC = ElementC_;
+
+    /// Layout of C matrix (concept: layout::MapFunc)
+    using LayoutC = LayoutC_;
+
+    /// Underlying mathematical operator
+    using Operator = arch::OpMultiplyAdd;
+
+    /// A operand storage
+    using FragmentA = Array<ElementA, Shape::kMK>;
+
+    /// B operand storage
+    using FragmentB = Array<ElementB, Shape::kKN>;
+
+    /// A operand storage
+    using FragmentMaskFirst = Array<ElementMaskFirst, Shape::kMK>;
+
+    /// B operand storage
+    using FragmentMaskSecond = Array<ElementMaskSecond, Shape::kKN>;
+
+    /// C operand storage
+    using FragmentC = Array<ElementC, Shape::kMN>;
+
+    /// Underlying matrix multiply operator (concept: arch::Mma)
+    using Mma = RegionRestrictedMmaGeneric<
+            Shape, ElementA, LayoutA, ElementB, LayoutB, ElementMaskFirst,
+            LayoutMaskFirst, ElementMaskSecond, LayoutMaskSecond, ElementC,
+            LayoutC, Operator>;
+    using ArchMmaOperator = typename Mma::MmaOp;
+    //
+    // Methods
+    //
+
+    /// Computes a matrix product D = A * B + C
+    CUTLASS_HOST_DEVICE
+    void operator()(FragmentC& D, FragmentA const& A, FragmentB const& B,
+                    FragmentMaskFirst const& maskFirst,
+                    FragmentMaskSecond const& maskSecond, FragmentC const& C) {
+        Mma mma;
+
+        mma(D, A, B, maskFirst, maskSecond, C);
+    }
+};
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 }  // namespace thread

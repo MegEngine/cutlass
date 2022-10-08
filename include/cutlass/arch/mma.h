@@ -161,6 +161,85 @@ struct Mma<gemm::GemmShape<1, 1, 1>, 1, ElementA, LayoutA, ElementB, LayoutB,
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// Matrix multiply-add operation
+template <
+        /// Size of the matrix product (concept: GemmShape)
+        typename Shape_,
+        /// Number of threads participating
+        int kThreads_,
+        /// Data type of A elements
+        typename ElementA,
+        /// Layout of A matrix (concept: MatrixLayout)
+        typename LayoutA,
+        /// Data type of B elements
+        typename ElementB,
+        /// Layout of B matrix (concept: MatrixLayout)
+        typename LayoutB,
+        /// Data type of A elements
+        typename ElementFirst,
+        /// Layout of A matrix (concept: MatrixLayout)
+        typename LayoutFirst,
+        /// Data type of B elements
+        typename ElementSecond,
+        /// Layout of B matrix (concept: MatrixLayout)
+        typename LayoutSecond,
+        /// Element type of C matrix
+        typename ElementC,
+        /// Layout of C matrix (concept: MatrixLayout)
+        typename LayoutC,
+        /// Inner product operator
+        typename Operator>
+struct RegionRestrictedMma;
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Matrix multiply-add operation - specialized for 1x1x1x1 matrix multiply
+/// operation
+template <
+        /// Data type of A elements
+        typename ElementA,
+        /// Layout of A matrix (concept: MatrixLayout)
+        typename LayoutA,
+        /// Data type of B elements
+        typename ElementB,
+        /// Layout of B matrix (concept: MatrixLayout)
+        typename LayoutB,
+        /// Data type of B elements
+        typename ElementMaskFirst,
+        /// Layout of A matrix (concept: MatrixLayout)
+        typename LayoutMaskFirst,
+        /// Element type of C matrix
+        typename ElementMaskSecond,
+        /// Layout of B matrix (concept: MatrixLayout)
+        typename LayoutMaskSecond,
+        /// Element type of C matrix
+        typename ElementC,
+        /// Layout of C matrix (concept: MatrixLayout)
+        typename LayoutC,
+        /// Inner product operator
+        typename Operator_>
+struct RegionRestrictedMma<gemm::GemmShape<1, 1, 1>, 1, ElementA, LayoutA,
+                           ElementB, LayoutB, ElementMaskFirst, LayoutMaskFirst,
+                           ElementMaskSecond, LayoutMaskSecond, ElementC,
+                           LayoutC, Operator_> {
+    using Shape = gemm::GemmShape<1, 1, 1>;
+    using Operator = Operator_;
+
+    CUTLASS_HOST_DEVICE
+    void operator()(Array<ElementC, 1>& d, Array<ElementA, 1> const& a,
+                    Array<ElementB, 1> const& b,
+                    Array<ElementMaskFirst, 1> const& maskFirst,
+                    Array<ElementMaskSecond, 1> const& maskSecond,
+                    Array<ElementC, 1> const& c) {
+        multiply_add<ElementA, ElementB, ElementC> op;
+        if (maskFirst[0] == maskSecond[0]) {
+            d[0] = op(a[0], b[0], c[0]);
+        }
+    }
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Specifies internal data type for computation

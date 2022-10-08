@@ -68,6 +68,14 @@ struct DefaultConvolutionConfiguration;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+template <typename OperatorClass, typename ArchTag, typename ElementSrc,
+          typename ElementFilter, typename ElementMaskInput,
+          typename ElementMaskOutput, typename ElementDst,
+          typename ElementAccumulator>
+struct DefaultRegionRestrictedConvolutionConfiguration;
+
+////////////////////////////////////////////////////////////////////////////////
+
 template <typename ArchTag, typename ElementDst>
 struct DefaultConvolutionConfiguration<arch::OpClassSimt, ArchTag, int8_t,
                                        int8_t, ElementDst, int32_t> {
@@ -133,6 +141,28 @@ struct DefaultConvolutionConfiguration<arch::OpClassSimt, ArchTag, float, float,
                                        ElementDst, float> {
     static int const kAlignmentSrc = 4;
     static int const kAlignmentFilter = 1;
+    using ThreadblockShape = gemm::GemmShape<128, 128, 32>;
+    using WarpShape = gemm::GemmShape<32, 64, 32>;
+    using InstructionShape = gemm::GemmShape<1, 1, 1>;
+    static int const kStages = 2;
+
+    using EpilogueOutputOp =
+            epilogue::thread::BiasAddLinearCombination<ElementDst, 1, float,
+                                                       float, float>;
+
+    using Operator = arch::OpMultiplyAdd;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+template <typename ArchTag, typename ElementDst>
+struct DefaultRegionRestrictedConvolutionConfiguration<
+        arch::OpClassSimt, ArchTag, float, float, int32_t, int32_t, ElementDst,
+        float> {
+    static int const kAlignmentSrc = 4;
+    static int const kAlignmentFilter = 1;
+    static int const kAlignmentMaskInput = 4;
+    static int const kAlignmentMaskOutput = 1;
     using ThreadblockShape = gemm::GemmShape<128, 128, 32>;
     using WarpShape = gemm::GemmShape<32, 64, 32>;
     using InstructionShape = gemm::GemmShape<1, 1, 1>;
