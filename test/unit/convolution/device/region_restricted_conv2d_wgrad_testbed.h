@@ -452,8 +452,8 @@ bool TestRegionRestrictedDepthwiseConv2dWgrad() {
 
     for (int n : {160, 48, 33}) {
         for (int g : {3, 7}) {
-            for (int ih : {16}) {
-                for (int iw : {16}) {
+            for (int ih : {16, 19}) {
+                for (int iw : {16, 19}) {
                     for (int fh : {15, 7, 5, 3}) {
                         for (int ph : {static_cast<int>(fh / 2), 0}) {
                             for (int sh : {1, 2}) {
