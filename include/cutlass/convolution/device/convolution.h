@@ -46,6 +46,7 @@
 
 #include "cutlass/convolution/device/default_convolution_configuration.h"
 #include "cutlass/convolution/kernel/default_region_restrited_conv2d_wgrad.h"
+#include "cutlass/convolution/kernel/default_region_restricted_conv2d_fprop.h"
 #include "cutlass/convolution/kernel/default_conv2d_wgrad.h"
 #include "cutlass/convolution/kernel/default_conv2d_dgrad.h"
 #include "cutlass/convolution/kernel/default_conv2d_fprop.h"
@@ -766,8 +767,241 @@ public:
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-/*! ConvolutionBackwardFilter device-level operator.
- *  This operator is only used for depthwise convolution now
+/*! RegionRestrictedConvolutionFprop device-level operator.
+ *  This operator is only used for RRConv now
+ */
+template <
+        /// Element type for Src Tensor operand
+        typename ElementSrc_,
+        /// Layout type for Src Tensor operand
+        typename LayoutSrc_,
+        /// Element type for Filter Tensor operand
+        typename ElementFilter_,
+        /// Layout type for Filter Tensor operand
+        typename LayoutFilter_,
+        /// Element type for Rin Tensor operand
+        typename ElementMaskInput_,
+        /// Layout type for Rin Tensor operand
+        typename LayoutMaskInput_,
+        /// Element type for Rout Tensor operand
+        typename ElementMaskOutput_,
+        /// Layout type for Rout Tensor operand
+        typename LayoutMaskOutput_,
+        /// Element type for Dst and Z Tensor operands
+        typename ElementDst_,
+        /// Layout type for Dst and Z Tensor operands
+        typename LayoutDst_,
+        // Element type for Bias Tensor operands
+        typename ElementBias_,
+        // Layout type for Bias Tensor operands
+        typename LayoutBias_,
+        /// Element type for internal accumulation
+        typename ElementAccumulator_,
+        /// Convolution Type
+        ConvType ConvolutionType,
+        /// Operator class tag
+        typename OperatorClass_,
+        /// Tag indicating architecture to tune for
+        typename ArchTag_,
+        /// Threadblock-level tile size (concept: GemmShape)
+        typename ThreadblockShape_,
+        /// Warp-level tile size (concept: GemmShape)
+        typename WarpShape_,
+        /// Instruction-level tile size (concept: GemmShape)
+        typename InstructionShape_,
+        /// Epilogue output operator
+        typename EpilogueOutputOp_,
+        /// Threadblock-level swizzling operator
+        typename ThreadblockSwizzle_,
+        /// Number of stages used in the pipelined mainloop
+        int Stages,
+        /// Access granularity of Src Tensor in units of elements
+        int AlignmentSrc,
+        /// Access granularity of Filter Tensor in units of elements
+        int AlignmentFilter,
+        /// Access granularity of Src Tensor in units of elements
+        int AlignmentMaskInput,
+        /// Access granularity of Filter Tensor in units of elements
+        int AlignmentMaskOutput,
+        /// whether use special optimization for deconv stride 2
+        cutlass::conv::SpecialOptimizeDesc SpecialOpt,
+        /// Operation performed by Convolution
+        typename Operator_,
+        /// Implicit Gemm Mode
+        cutlass::conv::ImplicitGemmMode GemmMode>
+class RegionRestrictedConvolutionFprop {
+public:
+    using ElementSrc = ElementSrc_;
+    using LayoutSrc = LayoutSrc_;
+    using ElementFilter = ElementFilter_;
+    using LayoutFilter = LayoutFilter_;
+    using ElementMaskInput = ElementMaskInput_;
+    using LayoutMaskInput = LayoutMaskInput_;
+    using ElementMaskOutput = ElementMaskOutput_;
+    using LayoutMaskOutput = LayoutMaskOutput_;
+    using ElementDst = ElementDst_;
+    using LayoutDst = LayoutDst_;
+    using ElementBias = ElementBias_;
+    using LayoutBias = LayoutBias_;
+    using ElementAccumulator = ElementAccumulator_;
+    using OperatorClass = OperatorClass_;
+    using ArchTag = ArchTag_;
+    using ThreadblockShape = ThreadblockShape_;
+    using WarpShape = WarpShape_;
+    using InstructionShape = InstructionShape_;
+    using EpilogueOutputOp = EpilogueOutputOp_;
+    using ThreadblockSwizzle = ThreadblockSwizzle_;
+    using Operator = Operator_;
+    static const ConvType kConvolutionType = ConvolutionType;
+    static int const kStages = Stages;
+    static int const kAlignmentSrc = AlignmentSrc;
+    static int const kAlignmentFilter = AlignmentFilter;
+    static int const kAlignmentMaskInput = AlignmentMaskInput;
+    static int const kAlignmentMaskOutput = AlignmentMaskOutput;
+    static int const kAlignmentDst = EpilogueOutputOp::kCount;
+    static cutlass::conv::SpecialOptimizeDesc const kSpecialOpt = SpecialOpt;
+    static cutlass::conv::ImplicitGemmMode const kGemmMode = GemmMode;
+
+    using ConvolutionKernel = typename cutlass::conv::kernel::
+            DefaultRegionRestrictedConvolution2dFprop<
+                    ElementSrc, LayoutSrc, ElementFilter, LayoutFilter,
+                    ElementMaskInput, LayoutMaskInput, ElementMaskOutput,
+                    LayoutMaskOutput, ElementDst, LayoutDst, ElementAccumulator,
+                    OperatorClass, ArchTag, ThreadblockShape, WarpShape,
+                    InstructionShape, EpilogueOutputOp, ThreadblockSwizzle,
+                    kStages, Operator, kAlignmentSrc, kAlignmentFilter,
+                    kAlignmentMaskInput, kAlignmentMaskOutput, kGemmMode,
+                    kConvolutionType>::Kernel;
+    using TensorRefSrc = typename ConvolutionKernel::TensorRefSrc;
+    using TensorRefFilter = typename ConvolutionKernel::TensorRefFilter;
+    using TensorRefDst = typename ConvolutionKernel::TensorRefDst;
+    using TensorRefBias = typename ConvolutionKernel::TensorRefBias;
+    using Arguments = typename ConvolutionKernel::Arguments;
+    using ConvolutionParameter = typename ConvolutionKernel::ConvProblemSize;
+    static cutlass::conv::Operator const kConvolutionalOperator =
+            ConvolutionKernel::kConvolutionalOperator;
+
+private:
+    /// Kernel parameters object
+    typename ConvolutionKernel::Params params_;
+
+public:
+    /// Constructs the GEMM.
+    RegionRestrictedConvolutionFprop() {}
+
+    /// Determines whether the GEMM can execute the given problem.
+    /// Determines whether the Implicit GEMM can execute the given problem.
+    static Status can_implement(Arguments const& args) {
+        Status status = ConvolutionKernel::can_implement(
+                args.problem_size, args.ref_src, args.ref_filter,
+                args.ref_mask_input, args.ref_mask_output, args.ref_bias,
+                args.ref_z, args.ref_dst);
+
+        if (status != Status::kSuccess) {
+            return status;
+        }
+
+        return Status::kSuccess;
+    }
+    /// Gets the workspace size
+    static size_t get_workspace_size(Arguments const& args) {
+        return ConvolutionKernel::get_workspace_size(args.problem_size);
+    }
+    /// Initializes GEMM state from arguments.
+    Status initialize(Arguments const& args, void* workspace = nullptr,
+                      cudaStream_t stream = nullptr) {
+        // Determine grid shape
+        ThreadblockSwizzle threadblock_swizzle;
+
+        // TODO: check
+        cutlass::gemm::GemmCoord grid_shape =
+                threadblock_swizzle.get_tiled_shape(
+                        args.problem_size,
+                        {ThreadblockShape::kM, ThreadblockShape::kN,
+                         ThreadblockShape::kK});
+
+        // Initialize the Params structure
+        params_ = typename ConvolutionKernel::Params{
+                args, grid_shape, static_cast<int*>(workspace)};
+
+        return Status::kSuccess;
+    }
+
+    /// Initializes GEMM state from arguments.
+    Status update(Arguments const& args, void* workspace = nullptr) {
+        // update the params structure from the arguments
+        params_.ref_src.reset(args.ref_src.data());
+        params_.ref_filter.reset(args.ref_filter.data());
+        params_.ref_mask_input.reset(args.ref_mask_input.data());
+        params_.ref_mask_output.reset(args.ref_mask_output.data());
+        params_.ref_bias.reset(args.ref_bias.data());
+        params_.ref_z.reset(args.ref_z.data());
+        params_.ref_dst.reset(args.ref_dst.data());
+        params_.output_op = args.output_op;
+        params_.transform_src = args.transform_src;
+        params_.transform_filter = args.transform_filter;
+        params_.workspace = static_cast<int*>(workspace);
+
+        return Status::kSuccess;
+    }
+
+    /// Runs the kernel using initialized state.
+    Status run(cudaStream_t stream = nullptr) {
+        ThreadblockSwizzle threadblock_swizzle;
+
+        dim3 grid =
+                threadblock_swizzle.get_grid_shape(params_.grid_tiled_shape);
+        dim3 block(ConvolutionKernel::kThreadCount, 1, 1);
+
+        cudaError_t result;
+
+        int smem_size = int(sizeof(typename ConvolutionKernel::SharedStorage));
+        if (smem_size >= (48 << 10)) {
+            result = cudaFuncSetAttribute(
+                    Kernel<ConvolutionKernel>,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+
+            if (result != cudaSuccess) {
+                return Status::kErrorInternal;
+            }
+
+            result = cudaFuncSetAttribute(
+                    Kernel<ConvolutionKernel>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+
+            if (result != cudaSuccess) {
+                return Status::kErrorInternal;
+            }
+        }
+
+        cutlass::Kernel<ConvolutionKernel>
+                <<<grid, block, smem_size, stream>>>(params_);
+
+        result = cudaGetLastError();
+
+        return result == cudaSuccess ? Status::kSuccess
+                                     : Status::kErrorInternal;
+    }
+
+    /// Runs the kernel using initialized state.
+    Status operator()(cudaStream_t stream = nullptr) { return run(stream); }
+
+    /// Runs the kernel using initialized state.
+    Status operator()(Arguments const& args, void* workspace = nullptr,
+                      cudaStream_t stream = nullptr) {
+        Status status = initialize(args, workspace);
+
+        if (status == Status::kSuccess) {
+            status = run(stream);
+        }
+
+        return status;
+    }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+/*! RegionRestrictedConvolutionBackwardFilter device-level operator.
+ *  This operator is only used for RRConv now
  */
 template <
         /// Element type for Src Tensor operand

@@ -204,13 +204,13 @@ template <
         typename ElementB,
         /// Layout of B matrix (concept: MatrixLayout)
         typename LayoutB,
-        /// Data type of B elements
+        /// Data type of First mask elements
         typename ElementMaskFirst,
-        /// Layout of A matrix (concept: MatrixLayout)
+        /// Layout of First mask matrix (concept: MatrixLayout)
         typename LayoutMaskFirst,
-        /// Element type of C matrix
+        /// Element type of Second mask matrix
         typename ElementMaskSecond,
-        /// Layout of B matrix (concept: MatrixLayout)
+        /// Layout of Second mask matrix (concept: MatrixLayout)
         typename LayoutMaskSecond,
         /// Element type of C matrix
         typename ElementC,

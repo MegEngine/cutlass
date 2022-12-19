@@ -571,6 +571,91 @@ void RegionRestricted_Depsep_Wgrad(
     }
 }
 
+/// Depthwise-separable convolution
+template <typename ElementSrc, typename LayoutSrc, typename ElementFilter,
+          typename LayoutFilter, typename ElementMaskInput,
+          typename LayoutMaskInput, typename ElementMaskOutput,
+          typename LayoutMaskOutput, typename ElementDst, typename LayoutDst,
+          typename ElementAccumulator, typename ElementCompute,
+          typename ConvertOp = NumericConverter<ElementDst, ElementCompute>,
+          typename InnerProductOp = multiply_add<ElementAccumulator>>
+void RegionRestricted_Depsep_Fprop(
+        conv::Conv2dProblemSize conv_param,
+        cutlass::TensorRef<ElementSrc, LayoutSrc> tensor_src,
+        cutlass::TensorRef<ElementFilter, LayoutFilter> tensor_filter,
+        cutlass::TensorRef<ElementMaskInput, LayoutMaskInput> tensor_mask_input,
+        cutlass::TensorRef<ElementMaskOutput, LayoutMaskOutput>
+                tensor_mask_output,
+        cutlass::TensorRef<ElementDst, LayoutDst> tensor_dst,
+        ElementCompute alpha,
+        cutlass::conv::Mode mode = cutlass::conv::Mode::kCrossCorrelation) {
+    ConvertOp convert_op;
+    InnerProductOp inner_product_op;
+
+    int const N = conv_param.N;
+    int const G = conv_param.K;
+    int const H = conv_param.H;
+    int const W = conv_param.W;
+    int const P = conv_param.P;
+    int const Q = conv_param.Q;
+    int const R = conv_param.R;
+    int const S = conv_param.S;
+    int const PH = conv_param.pad_h;
+    int const PW = conv_param.pad_w;
+    int const SH = conv_param.stride_h;
+    int const SW = conv_param.stride_w;
+    int const DH = conv_param.dilation_h;
+    int const DW = conv_param.dilation_w;
+
+    // Apply MMA and accumulate ElementAccumulator
+    for (int g = 0; g < G; ++g) {
+        for (int n = 0; n < N; ++n) {
+            for (int p = 0; p < P; ++p) {
+                for (int q = 0; q < Q; ++q) {
+                    ElementAccumulator acc = ElementAccumulator();
+                    for (int r = 0; r < R; ++r) {
+                        for (int s = 0; s < S; ++s) {
+                            int filter_r = r;
+                            int filter_s = s;
+                            if (conv_param.mode ==
+                                cutlass::conv::Mode::kConvolution) {
+                                filter_r = R - 1 - r;
+                                filter_s = S - 1 - s;
+                            }
+
+                            int h = p * SH - PH + filter_r * DH;
+                            int w = q * SW - PW + filter_s * DW;
+
+                            if (h >= 0 && h < H && w >= 0 && w < W) {
+                                ElementSrc sv = tensor_src.at({n, h, w, g});
+
+                                ElementFilter fv = tensor_filter.at(
+                                        {g, filter_r, filter_s, 0});
+
+                                ElementMaskInput mi =
+                                        tensor_mask_input.at({n, h, w, 0});
+                                ElementMaskInput mo =
+                                        tensor_mask_output.at({n, p, q, 0});
+                                if (mi == mo) {
+                                    acc = inner_product_op(
+                                            ElementAccumulator(sv),
+                                            ElementAccumulator(fv), acc);
+                                }
+                            }
+                        }
+                    }
+                    // Apply Epilogue, compute ElementCompute, convert and
+                    // store ElementC
+                    ElementCompute intermediate = alpha * ElementCompute(acc);
+                    if (detail::need_round<ElementDst, ElementCompute>::value) {
+                        intermediate = detail::round(intermediate);
+                    }
+                    tensor_dst.at({n, p, q, g}) = convert_op(intermediate);
+                }
+            }
+        }
+    }
+}
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// Dgrad
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1969,6 +2054,53 @@ struct RegionRestrictedConvolution2dBackwardFilter<
     }
 };
 
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+template <conv::ConvType ConvolutionType, typename ElementSrc,
+          typename LayoutSrc, typename ElementFilter, typename LayoutFilter,
+          typename ElementMaskInput, typename LayoutMaskInput,
+          typename ElementMaskOutput, typename LayoutMaskOutput,
+          typename ElementDst, typename LayoutDst, typename ScalarType,
+          typename ComputeType,
+          typename InnerProductOp = cutlass::arch::OpMultiplyAdd>
+struct RegionRestrictedConvolution2dFprop;
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+template <typename ElementSrc, typename LayoutSrc, typename ElementFilter,
+          typename LayoutFilter, typename ElementMaskInput,
+          typename LayoutMaskInput, typename ElementMaskOutput,
+          typename LayoutMaskOutput, typename ElementDst, typename LayoutDst,
+          typename ScalarType, typename ComputeType, typename InnerProductOp>
+struct RegionRestrictedConvolution2dFprop<
+        conv::ConvType::kDepthwiseConvolution, ElementSrc, LayoutSrc,
+        ElementFilter, LayoutFilter, ElementMaskInput, LayoutMaskInput,
+        ElementMaskOutput, LayoutMaskOutput, ElementDst, LayoutDst, ScalarType,
+        ComputeType, InnerProductOp> {
+    using ConvertOp = typename platform::conditional<
+            detail::need_clamp<ElementDst>::value,
+            NumericConverterClamp<ElementDst, ScalarType>,
+            NumericConverter<ElementDst, ScalarType>>::type;
+    void operator()(
+            conv::Conv2dProblemSize conv_param, ScalarType alpha,
+            TensorRef<ElementSrc, LayoutSrc> tensor_src,
+            TensorRef<ElementFilter, LayoutFilter> tensor_filter,
+            TensorRef<ElementMaskInput, LayoutMaskInput> tensor_mask_input,
+            TensorRef<ElementMaskOutput, LayoutMaskOutput> tensor_mask_output,
+            TensorRef<ElementDst, LayoutDst> tensor_dst,
+            ComputeType initial_accum = ComputeType(0)) {
+        static_assert(LayoutSrc::kRank == 4 && LayoutFilter::kRank == 4 &&
+                              LayoutDst::kRank == 4,
+                      "Tensors must be of rank 4");
+        RegionRestricted_Depsep_Fprop<
+                ElementSrc, LayoutSrc, ElementFilter, LayoutFilter,
+                ElementMaskInput, LayoutMaskInput, ElementMaskOutput,
+                LayoutMaskOutput, ElementDst, LayoutDst, ScalarType,
+                ComputeType, ConvertOp, multiply_add<ComputeType>>(
+                conv_param, tensor_src, tensor_filter, tensor_mask_input,
+                tensor_mask_output, tensor_dst, alpha);
+    }
+};
 }  // namespace host
 }  // namespace reference
 }  // namespace cutlass

@@ -205,7 +205,7 @@ struct TileMap<layout::TensorNCHW, TileMapType::kRow2IHW_Col2OHW> {
     TileMap(Index wi, Index wo, Index sh, Index sw, Index ph, Index pw)
             : wi_(wi), wo_(wo), sh_(sh), sw_(sw), ph_(ph), pw_(pw) {
         find_divisor(wi_mul_, wi_shr_, wi);
-        find_divisor(wo_mul_, wo_shr_, wo);
+        find_divisor(wo_mul_, wo_shr_, wo);  // FIXME safety divide
     }
     /// convert row of logical coordinates to src height and width
     CUTLASS_HOST_DEVICE
