@@ -447,7 +447,7 @@ bool BenchRegionRestrictedDepthwiseConv2dFprop(int batch = 64,
 
     auto bench = [&args, &mode](int n, int h, int w, int c, int k, int r,
                                 int s) -> void {
-        int ph = h >> 1;
+        int ph = r >> 1;
         int stride = 1;
         int oh = (h + (ph << 1) - r) / stride + 1;
         int ow = (w + (ph << 1) - s) / stride + 1;

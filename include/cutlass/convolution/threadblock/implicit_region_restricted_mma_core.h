@@ -190,6 +190,61 @@ template <
         cutlass::arch::CacheOperation::Kind CacheOpFilter =
                 cutlass::arch::CacheOperation::Global>
 struct DefaultRegionRestrictedFpropMmaCore;
+
+template <
+        /// Shape of threadblock-scoped matrix multiply operator
+        typename Shape,
+        /// Shape of warp-level matrix multiply operator
+        typename WarpShape,
+        /// Shape of one matrix production operation (concept: GemmShape)
+        typename InstructionShape,
+        /// Element data type of Src Tensor operand
+        typename ElementSrc,
+        /// Layout of operand Src Tensor
+        typename LayoutSrc,
+        /// Access granularity of Src Tensor in units of elements
+        int kAlignmentSrc,
+        /// Element data type of Filter Tensor operand
+        typename ElementFilter,
+        /// Layout of operand Filter Tensor
+        typename LayoutFilter,
+        /// Access granularity of Filter Tensor in units of elements
+        int kAlignmentFilter,
+        /// Element data type of mask input
+        typename ElementMaskInput,
+        /// Layout of mask input
+        typename LayoutMaskInput,
+        /// Access granularity of mask input in units of elements
+        int kAlignmentMaskInput,
+        /// Element data type of mask output
+        typename ElementMaskOutput,
+        /// Layout of mask output
+        typename LayoutMaskOutput,
+        /// Access granularity of mask output in units of elements
+        int kAlignmentMaskOutput,
+        /// Data type of accumulator
+        typename ElementDst,
+        /// Layout of accumulator
+        typename LayoutDst,
+        /// Indicates type of math operator (arch::OpClassSimt or
+        /// arch::OpClassTensorOp)
+        typename OperatorClass,
+        /// Number of stages
+        int Stages,
+        /// Operation performed by MMA
+        typename Operator,
+        /// Store the accumulators in row major or column major.  Row major is
+        /// used when output layout is interleaved.
+        bool AccumulatorsInRowMajor,
+        /// Implicit Gemm Mode
+        ImplicitGemmMode GemmMode,
+        /// Cache operation of operand A
+        cutlass::arch::CacheOperation::Kind CacheOpSrc =
+                cutlass::arch::CacheOperation::Global,
+        /// Cache operation of operand B
+        cutlass::arch::CacheOperation::Kind CacheOpFilter =
+                cutlass::arch::CacheOperation::Global>
+struct DefaultRegionRestrictedDgradMmaCore;
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 }  // namespace threadblock

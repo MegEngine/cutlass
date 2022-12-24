@@ -449,6 +449,202 @@ public:
               warp_tile_iterator_mask_output_(
                       shared_storage.operand_mask_output_ref(), lane_idx) {}
 };
+
+/// Structure to compute the matrix product targeting CUDA cores and SIMT math
+/// instructions.
+template <
+        /// Size of the Gemm problem - concept: gemm::GemmShape<>
+        typename Shape_,
+        /// Policy describing tuning details (concept: MmaPolicy)
+        typename Policy_,
+        /// Number of stages,
+        int Stages,
+        /// Used for partial specialization
+        typename Enable = bool>
+class RegionRestrictedDgradMmaBase {
+public:
+    ///< Size of the Gemm problem - concept: gemm::GemmShape<>
+    using Shape = Shape_;
+
+    ///< Policy describing tuning details
+    using Policy = Policy_;
+
+    //
+    // Dependent types
+    //
+
+    /// Warp-level Mma
+    using Operator = typename Policy::Operator;
+
+    /// Shape describing the overall GEMM computed from shared memory
+    /// by each warp.
+    using WarpGemm = typename Policy::Operator::Shape;
+
+    /// Shape describing the number of warps filling the CTA
+    using WarpCount =
+            gemm::GemmShape<Shape::kM / WarpGemm::kM, Shape::kN / WarpGemm::kN,
+                            Shape::kK / WarpGemm::kK>;
+
+    /// Number of warp-level GEMM oeprations
+    static int const kWarpGemmIterations =
+            (WarpGemm::kK / Operator::Policy::MmaShape::kK);
+
+    /// Number of stages
+    static int const kStages = Stages;
+
+    /// Tensor reference to the Src Tensor operand
+    using TensorRefSrc =
+            TensorRef<typename Operator::ElementA, typename Operator::LayoutA>;
+
+    /// Tensor reference to the Filter operand
+    using TensorRefFilter =
+            TensorRef<typename Operator::ElementB, typename Operator::LayoutB>;
+
+    /// Tensor reference to the Src Tensor operand
+    using TensorRefMaskInput = TensorRef<typename Operator::ElementMaskInput,
+                                         typename Operator::LayoutMaskInput>;
+
+    using TensorRefMaskOutput = TensorRef<typename Operator::ElementMaskOutput,
+                                          typename Operator::LayoutMaskOutput>;
+
+    //
+    // Nested structs
+    //
+
+    /// Shared storage object needed by threadblock-scoped GEMM
+    class SharedStorage {
+    public:
+        //
+        // Type definitions
+        //
+
+        /// Shape of the A matrix operand in shared memory
+        using ShapeA = MatrixShape<Shape::kM + Policy::SmemPaddingA::kRow,
+                                   Shape::kK * kStages +
+                                           Policy::SmemPaddingA::kColumn>;
+
+        /// Shape of the B matrix operand in shared memory
+        using ShapeB =
+                MatrixShape<Shape::kK * kStages + Policy::SmemPaddingB::kRow,
+                            Shape::kN + Policy::SmemPaddingB::kColumn>;
+
+        using ShapeC = MatrixShape<Shape::kM + Policy::SmemPaddingA::kRow,
+                                   Shape::kN + Policy::SmemPaddingB::kColumn>;
+
+    public:
+        //
+        // Data members
+        //
+
+        /// Buffer for Src Tensor operand
+        AlignedBuffer<typename Operator::ElementA, ShapeA::kCount> operand_src;
+
+        /// Buffer for Filter Tensor operand
+        AlignedBuffer<typename Operator::ElementB, ShapeB::kCount>
+                operand_filter;
+
+        /// Buffer for input mask
+        AlignedBuffer<typename Operator::ElementMaskInput, ShapeC::kCount>
+                operand_mask_input;
+
+        AlignedBuffer<typename Operator::ElementMaskOutput, ShapeA::kCount>
+                operand_mask_output;
+
+    public:
+        //
+        // Methods
+        //
+
+        /// Returns a layout object for the Src Tensor
+        CUTLASS_DEVICE
+        static typename Operator::LayoutA LayoutSrc() {
+            return Operator::LayoutA::packed({ShapeA::kRow, ShapeA::kColumn});
+        }
+
+        /// Returns a layout object for the Filter Tensor
+        CUTLASS_HOST_DEVICE
+        static typename Operator::LayoutB LayoutFilter() {
+            return Operator::LayoutB::packed({ShapeB::kRow, ShapeB::kColumn});
+        }
+
+        /// Returns a layout object for the input mask
+        CUTLASS_DEVICE
+        static typename Operator::LayoutMaskInput LayoutMaskInput() {
+            return Operator::LayoutC::packed({ShapeC::kRow, ShapeC::kColumn});
+        }
+
+        CUTLASS_DEVICE
+        static typename Operator::LayoutMaskOutput LayoutMaskOutput() {
+            return Operator::LayoutA::packed({ShapeA::kRow, ShapeA::kColumn});
+        }
+
+        /// Returns a TensorRef to the Src Tensor operand
+        CUTLASS_HOST_DEVICE
+        TensorRefSrc operand_src_ref() {
+            return TensorRefSrc{operand_src.data(), LayoutSrc()};
+        }
+
+        /// Returns a TensorRef to the Filter Tensor operand
+        CUTLASS_HOST_DEVICE
+        TensorRefFilter operand_filter_ref() {
+            return TensorRefFilter{operand_filter.data(), LayoutFilter()};
+        }
+
+        /// Returns a TensorRef to the mask output
+        CUTLASS_HOST_DEVICE
+        TensorRefMaskInput operand_mask_input_ref() {
+            return TensorRefMaskInput{operand_mask_input.data(),
+                                      LayoutMaskInput()};
+        }
+
+        CUTLASS_HOST_DEVICE
+        TensorRefMaskOutput operand_mask_output_ref() {
+            return TensorRefMaskOutput{operand_mask_output.data(),
+                                       LayoutMaskOutput()};
+        }
+    };
+
+protected:
+    //
+    // Data members
+    //
+
+    /// Iterator to load a warp-scoped tile of Src Tensor operand from shared
+    /// memory
+    typename Operator::IteratorA warp_tile_iterator_src_;
+
+    /// Iterator to load a warp-scoped tile of Filter Tensor operand from shared
+    /// memory
+    typename Operator::IteratorB warp_tile_iterator_filter_;
+
+    /// Iterator to load a warp-scoped tile of Src Tensor operand from shared
+    /// memory
+    typename Operator::IteratorMaskInput warp_tile_iterator_mask_input_;
+
+    typename Operator::IteratorMaskOutput warp_tile_iterator_mask_output_;
+
+public:
+    /// Construct from tensor references
+    CUTLASS_DEVICE
+    RegionRestrictedDgradMmaBase(
+            ///< Shared storage needed for internal use by threadblock-scoped
+            ///< GEMM
+            SharedStorage& shared_storage,
+            ///< ID within the threadblock
+            int thread_idx,
+            ///< ID of warp
+            int warp_idx,
+            ///< ID of each thread within a warp
+            int lane_idx)
+            : warp_tile_iterator_src_(shared_storage.operand_src_ref(),
+                                      lane_idx),
+              warp_tile_iterator_filter_(shared_storage.operand_filter_ref(),
+                                         lane_idx),
+              warp_tile_iterator_mask_input_(
+                      shared_storage.operand_mask_input_ref(), lane_idx),
+              warp_tile_iterator_mask_output_(
+                      shared_storage.operand_mask_output_ref(), lane_idx) {}
+};
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 }  // namespace threadblock
